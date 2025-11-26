@@ -11,19 +11,14 @@ from sklearn.metrics import mean_squared_error, r2_score
 # ================================
 st.markdown("""
     <style>
-        /* Background gradient */
         .stApp {
             background: linear-gradient(180deg, #cce7ff, #e8f6ff);
             color: #00334e;
         }
-
-        /* Titles */
         h1, h2, h3 {
             color: #003a5c !important;
             font-weight: 900 !important;
         }
-
-        /* Card style */
         .big-card {
             padding: 18px;
             border-radius: 18px;
@@ -31,14 +26,10 @@ st.markdown("""
             border-left: 6px solid #0077b6;
             margin-bottom: 20px;
         }
-
-        /* Table styling */
         .dataframe th {
             background-color: #0077b6 !important;
             color: white !important;
         }
-
-        /* Buttons */
         .stButton button {
             background-color: #0096c7;
             color: white;
@@ -54,11 +45,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ================================
-# 0. DATA DEFAULT
+# DATA DEFAULT
 # ================================
 def load_default_data():
     tanggal_range = pd.date_range(start="2018-01-01", end="2022-12-31", freq="D")
-
     np.random.seed(42)
     df = pd.DataFrame({
         "Tanggal": tanggal_range,
@@ -93,7 +83,7 @@ if uploaded_file:
     st.success("🌴 Data berhasil dimuat! Menggunakan data asli Anda.")
 else:
     df = load_default_data()
-    st.info("📌 Tidak ada file diupload — menggunakan **data bawaan Bangka Belitung (default)**.")
+    st.info("📌 Tidak ada file diupload — menggunakan data cuaca Bangka Belitung (default).")
 
 # ================================
 # PROSES DATA
@@ -185,10 +175,8 @@ future_data = pd.DataFrame(
 for var in available_vars:
     future_data[f"Pred_{var}"] = models[var].predict(future_data[['Tahun', 'Bulan']])
 
-st.dataframe(future_data.head(15))
-
 # ================================
-# GRAFIK
+# GRAFIK TREN UTAMA
 # ================================
 st.subheader("🌊 Grafik Tren Iklim Bangka Belitung")
 
@@ -196,12 +184,11 @@ monthly_df['Sumber'] = 'Historis'
 future_data['Sumber'] = 'Prediksi'
 
 all_data = []
-
 for var in available_vars:
     hist = monthly_df[['Tahun','Bulan',var,'Sumber']].rename(columns={var:'Nilai'})
     hist['Variabel'] = akademis_label[var]
 
-    fut = future_data[['Tahun','Bulan',f"Pred_{var}",'Sumber']].rename(columns={f"Pred_{var}":'Nilai'})
+    fut = future_data[['Tahun','Bulan',f"Pred_{var}",'Sumber']].rename(columns={f"Pred_{var}"]:'Nilai'})
     fut['Variabel'] = akademis_label[var]
 
     all_data.append(pd.concat([hist, fut]))
@@ -222,7 +209,83 @@ fig = px.line(
 st.plotly_chart(fig, use_container_width=True)
 
 # ================================
-# DOWNLOAD DATA
+# 📊 GRAFIK TAHUNAN — TAMBAHAN BARU
+# ================================
+st.subheader("📘 Grafik Ringkasan Tahunan")
+
+annual_hist = monthly_df.groupby("Tahun")[available_vars].mean().reset_index()
+annual_hist["Sumber"] = "Historis"
+
+annual_pred = future_data.groupby("Tahun")[ [f"Pred_{v}" for v in available_vars] ].mean().reset_index()
+annual_pred.columns = ["Tahun"] + available_vars
+annual_pred["Sumber"] = "Prediksi"
+
+annual_all = pd.concat([annual_hist, annual_pred])
+
+selected_var2 = st.selectbox("Pilih Variabel Tahunan:", [akademis_label[v] for v in available_vars])
+var_key = [k for k,v in akademis_label.items() if v == selected_var2][0]
+
+fig2 = px.line(
+    annual_all,
+    x="Tahun",
+    y=var_key,
+    color="Sumber",
+    title=f"📘 Tren Tahunan {selected_var2} (Rata-rata per Tahun)",
+    markers=True
+)
+st.plotly_chart(fig2, use_container_width=True)
+
+# ================================
+# 🧠 RINGKASAN ANALISIS
+# ================================
+st.subheader("🧠 Ringkasan Perubahan Iklim 2025–2075")
+
+summary_text = ""
+for var in available_vars:
+    awal = future_data[f"Pred_{var}"].iloc[0]
+    akhir = future_data[f"Pred_{var}"].iloc[-1]
+    perubahan = akhir - awal
+    
+    if perubahan > 0:
+        tren = "meningkat"
+    else:
+        tren = "menurun"
+
+    summary_text += f"- **{akademis_label[var]}** diprediksi **{tren}** sebesar **{perubahan:.2f}** dalam 50 tahun.<br>"
+
+st.markdown(f"""
+<div class="big-card">
+<b>✨ Ringkasan Tren 50 Tahun</b><br><br>
+{summary_text}
+</div>
+""", unsafe_allow_html=True)
+
+# ================================
+# 🎯 KEGUNAAN DASHBOARD
+# ================================
+st.subheader("🎯 Kegunaan Dashboard Prediksi Iklim")
+
+st.markdown("""
+<div class="big-card">
+<b>🔹 1. Monitoring Iklim</b><br>
+Mengamati tren iklim historis dan membandingkannya dengan prediksi hingga tahun 2075.<br><br>
+
+<b>🔹 2. Perencanaan Kebijakan</b><br>
+Membantu pemerintah daerah merancang mitigasi dan adaptasi perubahan iklim.<br><br>
+
+<b>🔹 3. Analisis Risiko Cuaca Ekstrem</b><br>
+Melihat potensi kenaikan suhu, curah hujan, dan perubahan atmosfer lainnya.<br><br>
+
+<b>🔹 4. Edukasi dan Penelitian</b><br>
+Membantu mahasiswa, guru, dan peneliti memahami perubahan iklim dengan visual interaktif.<br><br>
+
+<b>🔹 5. Machine Learning Insight</b><br>
+Menggunakan Random Forest untuk menghasilkan prediksi berbasis data ilmiah.
+</div>
+""", unsafe_allow_html=True)
+
+# ================================
+# DOWNLOAD FILE
 # ================================
 csv = future_data.to_csv(index=False).encode("utf-8")
 st.download_button(
