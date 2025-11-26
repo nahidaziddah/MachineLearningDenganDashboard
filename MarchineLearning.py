@@ -79,8 +79,12 @@ st.subheader("📁 Upload Data Cuaca Anda")
 uploaded_file = st.file_uploader("Unggah file Excel (.xlsx)", type=["xlsx"])
 
 if uploaded_file:
-    df = pd.read_excel(uploaded_file, sheet_name=0)
-    st.success("🌴 Data berhasil dimuat! Menggunakan data asli Anda.")
+    try:
+        df = pd.read_excel(uploaded_file, sheet_name=0)
+        st.success("🌴 Data berhasil dimuat! Menggunakan data asli Anda.")
+    except Exception as e:
+        st.error(f"Error membaca file: {e}")
+        st.stop()
 else:
     df = load_default_data()
     st.info("📌 Tidak ada file diupload — menggunakan data cuaca Bangka Belitung (default).")
@@ -88,12 +92,21 @@ else:
 # ================================
 # PROSES DATA
 # ================================
-df['Tanggal'] = pd.to_datetime(df['Tanggal'])
+if "Tanggal" not in df.columns:
+    st.error("Kolom 'Tanggal' tidak ditemukan. Pastikan file memiliki kolom 'Tanggal'.")
+    st.stop()
+
+df['Tanggal'] = pd.to_datetime(df['Tanggal'], errors='coerce')
+df = df.dropna(subset=['Tanggal']).copy()
 df['Tahun'] = df['Tanggal'].dt.year
 df['Bulan'] = df['Tanggal'].dt.month
 
 possible_vars = ["Tn", "Tx", "Tavg", "kelembaban", "curah_hujan", "matahari", "FF_X", "DDD_X"]
 available_vars = [v for v in possible_vars if v in df.columns]
+
+if len(available_vars) == 0:
+    st.error("Tidak ada variabel cuaca valid (Tn/Tx/Tavg/kelembaban/curah_hujan/matahari/FF_X/DDD_X).")
+    st.stop()
 
 akademis_label = {
     "Tn": "Suhu Minimum (°C)",
@@ -118,13 +131,21 @@ st.dataframe(monthly_df)
 # ================================
 # TRAIN MODEL
 # ================================
-X = monthly_df[['Tahun', 'Bulan']]
+# Pastikan ada cukup data untuk melatih
+if monthly_df.shape[0] < 12:
+    st.warning("Data bulanan terlalu sedikit untuk pelatihan yang andal (butuh >= 12 baris).")
 models = {}
 metrics = {}
 
 for var in available_vars:
     y = monthly_df[var]
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+    # Skip jika terlalu sedikit
+    if len(y) < 10:
+        st.warning(f"Data untuk variabel {var} terlalu sedikit, dilewati pelatihan.")
+        continue
+    X_train, X_test, y_train, y_test = train_test_split(
+        monthly_df[['Tahun', 'Bulan']], y, test_size=0.2, random_state=42
+    )
 
     model = RandomForestRegressor(n_estimators=250, random_state=42)
     model.fit(X_train, y_train)
@@ -140,13 +161,16 @@ for var in available_vars:
 # EVALUASI
 # ================================
 st.subheader("📈 Evaluasi Model")
-for var, m in metrics.items():
-    st.markdown(f"""
-    <div class="big-card">
-        <b>{akademis_label[var]}</b><br>
-        RMSE: {m['rmse']:.3f} — R²: {m['r2']:.3f}
-    </div>
-    """, unsafe_allow_html=True)
+if len(metrics) == 0:
+    st.info("Tidak ada model terlatih (mungkin data terlalu sedikit).")
+else:
+    for var, m in metrics.items():
+        st.markdown(f"""
+        <div class="big-card">
+            <b>{akademis_label[var]}</b><br>
+            RMSE: {m['rmse']:.3f} — R²: {m['r2']:.3f}
+        </div>
+        """, unsafe_allow_html=True)
 
 # ================================
 # PREDIKSI MANUAL
@@ -159,8 +183,11 @@ input_data = pd.DataFrame([[tahun_input, bulan_input]], columns=["Tahun", "Bulan
 
 st.write("### 🌤️ Hasil Prediksi:")
 for var in available_vars:
-    pred_val = models[var].predict(input_data)[0]
-    st.success(f"{akademis_label[var]}: **{pred_val:.2f}**")
+    if var in models:
+        pred_val = models[var].predict(input_data)[0]
+        st.success(f"{akademis_label[var]}: **{pred_val:.2f}**")
+    else:
+        st.info(f"Model untuk {akademis_label[var]} tidak tersedia (data kurang).")
 
 # ================================
 # PREDIKSI 2025–2075
@@ -173,7 +200,13 @@ future_data = pd.DataFrame(
 )
 
 for var in available_vars:
-    future_data[f"Pred_{var}"] = models[var].predict(future_data[['Tahun', 'Bulan']])
+    if var in models:
+        future_data[f"Pred_{var}"] = models[var].predict(future_data[['Tahun', 'Bulan']])
+    else:
+        # isi NaN jika model tidak ada
+        future_data[f"Pred_{var}"] = np.nan
+
+st.dataframe(future_data.head(15))
 
 # ================================
 # GRAFIK TREN UTAMA
@@ -185,55 +218,76 @@ future_data['Sumber'] = 'Prediksi'
 
 all_data = []
 for var in available_vars:
-    hist = monthly_df[['Tahun','Bulan',var,'Sumber']].rename(columns={var:'Nilai'})
+    # historis
+    hist = monthly_df[['Tahun','Bulan',var,'Sumber']].rename(columns={var:'Nilai'}).copy()
     hist['Variabel'] = akademis_label[var]
 
-    fut = future_data[['Tahun','Bulan',f"Pred_{var}",'Sumber']].rename(columns={f"Pred_{var}"]:'Nilai'})
-    fut['Variabel'] = akademis_label[var]
+    # prediksi: pastikan kolom Pred_{var} ada
+    pred_col = f"Pred_{var}"
+    if pred_col in future_data.columns:
+        fut = future_data[['Tahun','Bulan', pred_col, 'Sumber']].rename(columns={pred_col:'Nilai'}).copy()
+        fut['Variabel'] = akademis_label[var]
+        all_data.append(pd.concat([hist, fut]))
+    else:
+        all_data.append(hist)
 
-    all_data.append(pd.concat([hist, fut]))
+if len(all_data) == 0:
+    st.warning("Data untuk grafik tidak tersedia.")
+else:
+    merged = pd.concat(all_data, ignore_index=True)
+    merged['Tanggal'] = pd.to_datetime(merged['Tahun'].astype(str) + "-" + merged['Bulan'].astype(str) + "-01")
 
-merged = pd.concat(all_data)
-merged['Tanggal'] = pd.to_datetime(merged['Tahun'].astype(str) + "-" + merged['Bulan'].astype(str) + "-01")
+    selected_var = st.selectbox("Pilih Variabel Cuaca:", [akademis_label[v] for v in available_vars])
 
-selected_var = st.selectbox("Pilih Variabel Cuaca:", [akademis_label[v] for v in available_vars])
+    # konversi label ke key
+    var_key = [k for k,v in akademis_label.items() if v == selected_var][0]
 
-fig = px.line(
-    merged[merged["Variabel"] == selected_var],
-    x="Tanggal",
-    y="Nilai",
-    color="Sumber",
-    title=f"🌤️ Tren {selected_var} di Bangka Belitung",
-    markers=True
-)
-st.plotly_chart(fig, use_container_width=True)
+    fig = px.line(
+        merged[merged["Variabel"] == akademis_label[var_key]],
+        x="Tanggal",
+        y="Nilai",
+        color="Sumber",
+        title=f"🌤️ Tren {selected_var} di Bangka Belitung",
+        markers=True
+    )
+    st.plotly_chart(fig, use_container_width=True)
 
-# ================================
-# 📊 GRAFIK TAHUNAN — TAMBAHAN BARU
-# ================================
-st.subheader("📘 Grafik Ringkasan Tahunan")
+    # ================================
+    # 📊 GRAFIK TAHUNAN — TAMBAHAN BARU
+    # ================================
+    st.subheader("📘 Grafik Ringkasan Tahunan")
 
-annual_hist = monthly_df.groupby("Tahun")[available_vars].mean().reset_index()
-annual_hist["Sumber"] = "Historis"
+    # annual historis
+    annual_hist = monthly_df.groupby("Tahun")[available_vars].mean().reset_index()
+    annual_hist["Sumber"] = "Historis"
 
-annual_pred = future_data.groupby("Tahun")[ [f"Pred_{v}" for v in available_vars] ].mean().reset_index()
-annual_pred.columns = ["Tahun"] + available_vars
-annual_pred["Sumber"] = "Prediksi"
+    # annual prediksi (gunakan Pred_ kolom jika tersedia)
+    pred_cols = [f"Pred_{v}" for v in available_vars if f"Pred_{v}" in future_data.columns]
+    if len(pred_cols) > 0:
+        annual_pred = future_data.groupby("Tahun")[pred_cols].mean().reset_index()
+        # rename Pred_* -> original var names for plotting
+        rename_map = {f"Pred_{v}": v for v in available_vars if f"Pred_{v}" in future_data.columns}
+        annual_pred = annual_pred.rename(columns=rename_map)
+        annual_pred["Sumber"] = "Prediksi"
+        annual_all = pd.concat([annual_hist, annual_pred], ignore_index=True, sort=False)
+    else:
+        annual_all = annual_hist.copy()
 
-annual_all = pd.concat([annual_hist, annual_pred])
+    selected_var2 = st.selectbox("Pilih Variabel Tahunan:", [akademis_label[v] for v in available_vars], key="annual_var")
+    var_key2 = [k for k,v in akademis_label.items() if v == selected_var2][0]
 
-selected_var2 = st.selectbox("Pilih Variabel Tahunan:", [akademis_label[v] for v in available_vars])
-var_key = [k for k,v in akademis_label.items() if v == selected_var2][0]
-
-fig2 = px.line(
-    annual_all,
-    x="Tahun",
-    y=var_key,
-    color="Sumber",
-    title=f"📘 Tren Tahunan {selected_var2} (Rata-rata per Tahun)",
-    markers=True
-)
-st.plotly_chart(fig2, use_container_width=True)
+    if var_key2 in annual_all.columns:
+        fig2 = px.line(
+            annual_all,
+            x="Tahun",
+            y=var_key2,
+            color="Sumber",
+            title=f"📘 Tren Tahunan {selected_var2} (Rata-rata per Tahun)",
+            markers=True
+        )
+        st.plotly_chart(fig2, use_container_width=True)
+    else:
+        st.info("Data tahunan prediksi tidak lengkap untuk variabel ini.")
 
 # ================================
 # 🧠 RINGKASAN ANALISIS
@@ -242,23 +296,29 @@ st.subheader("🧠 Ringkasan Perubahan Iklim 2025–2075")
 
 summary_text = ""
 for var in available_vars:
-    awal = future_data[f"Pred_{var}"].iloc[0]
-    akhir = future_data[f"Pred_{var}"].iloc[-1]
-    perubahan = akhir - awal
-    
-    if perubahan > 0:
-        tren = "meningkat"
+    pred_col = f"Pred_{var}"
+    if pred_col in future_data.columns:
+        # ambil nilai pertama dan terakhir yang bukan NaN
+        valid_vals = future_data[pred_col].dropna().values
+        if valid_vals.size == 0:
+            continue
+        awal = valid_vals[0]
+        akhir = valid_vals[-1]
+        perubahan = akhir - awal
+        tren = "meningkat" if perubahan > 0 else "menurun" if perubahan < 0 else "stabil"
+        summary_text += f"- **{akademis_label[var]}** diprediksi **{tren}** sebesar **{perubahan:.2f}** dalam 50 tahun.<br>"
     else:
-        tren = "menurun"
+        summary_text += f"- **{akademis_label[var]}**: prediksi tidak tersedia (model tidak terlatih).<br>"
 
-    summary_text += f"- **{akademis_label[var]}** diprediksi **{tren}** sebesar **{perubahan:.2f}** dalam 50 tahun.<br>"
-
-st.markdown(f"""
-<div class="big-card">
-<b>✨ Ringkasan Tren 50 Tahun</b><br><br>
-{summary_text}
-</div>
-""", unsafe_allow_html=True)
+if summary_text == "":
+    st.info("Ringkasan tidak tersedia (tidak ada prediksi).")
+else:
+    st.markdown(f"""
+    <div class="big-card">
+    <b>✨ Ringkasan Tren 50 Tahun</b><br><br>
+    {summary_text}
+    </div>
+    """, unsafe_allow_html=True)
 
 # ================================
 # 🎯 KEGUNAAN DASHBOARD
